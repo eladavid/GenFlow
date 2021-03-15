@@ -4,25 +4,38 @@ import cv2
 from matplotlib import pyplot as plt
 from matplotlib import colors
 
-def resize_dataset(x, new_dim):
-    x_resized = np.zeros([x.shape[0], new_dim, new_dim])
-    for i in range(x.shape[0]):
-        x_resized[i,:,:] = cv2.resize(x[i,:,:], dsize=(new_dim,new_dim), interpolation=cv2.INTER_CUBIC)
+
+def resize_dataset(x, new_dim, is_rgb=0):
+    if is_rgb:
+        x_resized = np.zeros([x.shape[0], new_dim, new_dim, 3])
+        for i in range(x.shape[0]):
+            x_resized[i, :, :, :] = cv2.resize(x[i, :, :, :], dsize=(new_dim, new_dim), interpolation=cv2.INTER_CUBIC)
+    else:
+        x_resized = np.zeros([x.shape[0], new_dim, new_dim])
+        for i in range(x.shape[0]):
+            x_resized[i, :, :] = cv2.resize(x[i, :, :], dsize=(new_dim, new_dim), interpolation=cv2.INTER_CUBIC)
     return x_resized
 
 
-def flatten_and_fit_dims(x, patches=0):
-    if patches == 0:
-        x_cs = x.reshape(-1, x.shape[1]*x.shape[2]).T
+def flatten_and_fit_dims(x, patches=0, is_rgb=0):
+    if not is_rgb:
+        x_cs = x.reshape(-1, x.shape[1]*x.shape[2])
     else:
-        x_cs = x.reshape(-1, x.shape[1] * x.shape[2])
+        x_cs = x.reshape(-1, x.shape[1] * x.shape[2]*x.shape[3])
+    if patches == 0:
+        x_cs = x_cs.T
     return x_cs
 
 
-def reshape_as_pics(x):
-    pic_dim = int(np.sqrt(x.shape[0]))
-    x_pics = x.T.reshape(x.shape[1], pic_dim, pic_dim)
+def reshape_as_pics(x, is_rgb=0):
+    if is_rgb:
+        pic_dim = int(np.sqrt(x.shape[0] / 3))
+        x_pics = x.T.reshape(x.shape[1], pic_dim, pic_dim, 3)
+    else:
+        pic_dim = int(np.sqrt(x.shape[0]))
+        x_pics = x.T.reshape(x.shape[1], pic_dim, pic_dim)
     return x_pics
+
 
 # whiten_data(x):
 #   whitening of data matrix
@@ -233,7 +246,7 @@ def sph2cart(x):
 #       random_state (optional) - set random seed to control generation
 #   OUTPUT:
 #       collage - collage picture
-def convert_data_to_collage(x, pics_per_row=10, pics_per_col=10, random_state=-1):
+def convert_data_to_collage(x, pics_per_row=10, pics_per_col=10, random_state=-1, is_rgb=0):
     # need to add color option
     D = np.size(x, 0)
     N = np.size(x, 1)
@@ -241,14 +254,23 @@ def convert_data_to_collage(x, pics_per_row=10, pics_per_col=10, random_state=-1
         rng = np.random.RandomState(random_state)
     else:
         rng = np.random
-    pic_dim = int(np.sqrt(D))
-    collage = np.zeros([pics_per_row * pic_dim, pics_per_col * pic_dim])
+    if is_rgb:
+        n_channels = 3
+        pic_dim = int(np.sqrt(D/3))
+        collage = np.zeros([pics_per_row * pic_dim, pics_per_col * pic_dim, 3])
+    else:
+        n_channels = 1
+        pic_dim = int(np.sqrt(D))
+        collage = np.zeros([pics_per_row * pic_dim, pics_per_col * pic_dim, 1])
     samples_idcs = rng.choice(np.arange(N), pics_per_col*pics_per_row, replace=False)
     collage_cs = x[:, samples_idcs]
-    collage_images = collage_cs.reshape(pic_dim, pic_dim, -1)
+    collage_images = collage_cs.reshape(pic_dim, pic_dim, n_channels, -1)
     for i in range(pics_per_row):
         for j in range(pics_per_col):
-            collage[i*pic_dim:(i+1)*pic_dim, j*pic_dim:(j+1)*pic_dim] = collage_images[:, :, pics_per_row*i + j]
+            collage[i * pic_dim:(i + 1) * pic_dim, j * pic_dim:(j + 1) * pic_dim, :] = \
+                                                                collage_images[:, :, :, pics_per_row * i + j]
+    if not is_rgb:
+        collage = np.squeeze(collage)
     return collage
 
 
@@ -288,6 +310,19 @@ def calc_axis_io_score(axis_data, axis_gen, method='TV'):
     return axis_score
 
 
+
+def im3D2col_sliding_strided(im, blk_sz, stepsize=1):
+    im_channel1 = im[:,:,0]
+    im_channel2 = im[:, :, 1]
+    im_channel3 = im[:, :, 2]
+
+    channel1_patches = im2col_sliding_strided(im_channel1, blk_sz, stepsize)
+    channel2_patches = im2col_sliding_strided(im_channel2, blk_sz, stepsize)
+    channel3_patches = im2col_sliding_strided(im_channel3, blk_sz, stepsize)
+
+    patch_3d = np.concatenate((channel1_patches, channel2_patches, channel3_patches), axis=0)
+    return patch_3d
+
 def im2col_sliding_strided(im, blk_sz, stepsize=1):
     # Parameters
     m, n = im.shape
@@ -296,7 +331,6 @@ def im2col_sliding_strided(im, blk_sz, stepsize=1):
     n_cols = n - blk_sz[1] + 1
     shp = blk_sz[0], blk_sz[1], n_rows, n_cols
     strd = s0, s1, s0, s1
-
     out_view = np.lib.stride_tricks.as_strided(im, shape=shp, strides=strd)
     return out_view.reshape(blk_sz[0] * blk_sz[1], -1)[:, ::stepsize]
 
@@ -309,24 +343,37 @@ def im2col_sliding_strided(im, blk_sz, stepsize=1):
 #       stride - stride for the moving filter
 #   OUTPUT:
 #       x_patches - patch_sz**2 x num_of_patches x N tensor
-def split_to_patches(x, patch_sz, padding_flag=1, stride=1):
+def split_to_patches(x, patch_sz, padding_flag=1, stride=1, is_rgb=0):
     D = np.size(x, 0)
     N = np.size(x, 1)
     #x_im_view = x.reshape(int(np.sqrt(D)), int(np.sqrt(D)), N)
-    x_im_view = reshape_as_pics(x)
+    x_im_view = reshape_as_pics(x, is_rgb)
+
+    if not is_rgb: # allow 3-channel images (RGB)
+        x_im_view = np.expand_dims(x_im_view, axis=3)
+        n_channels = 1
+    else:
+        n_channels = 3
+
     if padding_flag:
         padding_factor = int(np.floor(patch_sz / 2))
         # do not pad 3-rd dim
-        npad = ((0, 0), (padding_factor, padding_factor), (padding_factor, padding_factor))
+        npad = ((0, 0), (padding_factor, padding_factor), (padding_factor, padding_factor), (0, 0))
         x_im_view_padded = np.pad(x_im_view, pad_width=npad, mode='constant', constant_values=0)#[:, :, 1:-1]
         padding_factor = 2 * int(np.floor(patch_sz/2))
     else:
         x_im_view_padded = x_im_view
         padding_factor = 0
-    patches_per_im = int((np.sqrt(D) + 1 + padding_factor - patch_sz)**2)
-    x_patches = np.zeros([(patch_sz**2), patches_per_im, N])
+    x_im_view_padded = np.squeeze(x_im_view_padded)
+
+    pic_dim = np.sqrt(D/n_channels)
+    patches_per_im = int((pic_dim + 1 + padding_factor - patch_sz) ** 2)
+    x_patches = np.zeros([(patch_sz ** 2) * n_channels, patches_per_im, N])
     for i in range(N):
-        x_patches[:, :, i] = im2col_sliding_strided(x_im_view_padded[i, :, :], [patch_sz, patch_sz], stride)
+        if is_rgb:
+            x_patches[:, :, i] = im3D2col_sliding_strided(x_im_view_padded[i, :, :], [patch_sz, patch_sz], stride)
+        else:
+            x_patches[:, :, i] = im2col_sliding_strided(x_im_view_padded[i, :, :], [patch_sz, patch_sz], stride)
     return x_patches, padding_factor
 
 
@@ -339,11 +386,30 @@ def split_to_patches(x, patch_sz, padding_flag=1, stride=1):
 #       stride - stride for the moving filter - not in use at the moment
 #   OUTPUT:
 #       x_recon - D (features) x N (samples) matrix
-def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1):
-    D = int((np.sqrt(np.size(x_patches, 1)) - 1 - padding_factor + patch_sz)**2)
-    N = np.size(x_patches, 2)
-    center_elem_idx = int(np.ceil(patch_sz**2/2)) - 1 # -1 offset for pythonic indexing as opposed to matlab
-    x_patches_centers = x_patches[center_elem_idx, :, :].squeeze()
+def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_rgb=0):
+    if is_rgb:
+        n_channels = 3
+    else:
+        n_channels = 1
+    D = int((np.sqrt(np.size(x_patches, 1)) - 1 - padding_factor + patch_sz)**2) * n_channels
+    N = np.size(x_patches, -1)
+    center_elem_idx_chan1 = int(np.ceil(patch_sz**2 / 2)) - 1 # -1 offset for pythonic indexing as opposed to matlab
+
+    x_patches_centers_chan1 = x_patches[center_elem_idx_chan1, :, :].squeeze()
+    x_patches_centers = x_patches_centers_chan1.reshape(int(D/n_channels), N)
+
+    if is_rgb:
+        center_elem_idx_chan2 = patch_sz**2 + center_elem_idx_chan1
+        x_patches_centers_chan2 = x_patches[center_elem_idx_chan2, :, :].squeeze()
+        x_patches_centers_chan2 = x_patches_centers_chan2.reshape(int(D / n_channels), N)
+
+        center_elem_idx_chan3 = 2 * (patch_sz ** 2) + center_elem_idx_chan1
+        x_patches_centers_chan3 = x_patches[center_elem_idx_chan3, :, :].squeeze()
+        x_patches_centers_chan3 = x_patches_centers_chan3.reshape(int(D / n_channels), N)
+
+        x_patches_centers = \
+            np.moveaxis(np.dstack((x_patches_centers, x_patches_centers_chan2, x_patches_centers_chan3)), -1, 1)
+        print(x_patches_centers.shape)
     # this line might be redundant
     x_recon = x_patches_centers.reshape(D, N)
     return x_recon

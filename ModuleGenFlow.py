@@ -1,6 +1,7 @@
 import operationUtils as op
 import numpy as np
 import sys
+import time
 
 MAX_INT = 1e6
 
@@ -34,12 +35,13 @@ class GenFlow:
         if n_samples == 0:
             n_samples = self.n_gen_samples
         init_feature_dim = self.layers[0].get_dim()
+        is_rgb = self.layers.is_multi_channel()
         if use_init_rng == 1:
             rng = np.random.RandomState(self.init_seed)
         else:
             rng = np.random
         gen_input = sigma * rng.randn(init_feature_dim, n_samples)
-        gen_input = op.reshape_as_pics(gen_input)
+        gen_input = op.reshape_as_pics(gen_input, is_rgb)
         return gen_input
 
     def fit(self, data_input, gen_input=None, start_layer=0, last_layer_idx=-1):
@@ -48,12 +50,15 @@ class GenFlow:
         if gen_input is None:
             gen_input = self.init_gen(use_init_rng=1)
         for i, layer in enumerate(self.layers):
+
             if i < start_layer:
                 continue
             if i > last_layer_idx:
                 break
+            start_time = time.time()
             gen_input = layer.fit(data_input, gen_input)
-            print('finished fit for Layer: {}'.format(i))
+            end_time = time.time()
+            print('finished fit for Layer: {}, time elapsed: {:.3f}'.format(i, end_time - start_time))
         self.last_fitted_layer = last_layer_idx
         return gen_input
 
@@ -67,8 +72,10 @@ class GenFlow:
                 continue
             if i > last_layer_idx:
                 break
+            start_time = time.time()
             gen_samples = layer.transform(data_input, gen_samples)
-            print('finished transforming at Layer: {}'.format(i))
+            end_time = time.time()
+            print('finished transforming at Layer: {}, time elapsed: {:.3f}'.format(i, end_time - start_time))
         return gen_samples
 
     def fit_transform(self, data_input, n_samples, last_layer_idx=-1):
@@ -79,8 +86,10 @@ class GenFlow:
         for i, layer in enumerate(self.layers):
             if i > last_layer_idx:
                 break
+            start_time = time.time()
             gen_fit_input, gen_samples_input = layer.fit_transform(data_input, gen_fit_input, gen_samples_input)
-            print('finished fit for Layer: {}'.format(i))
+            end_time = time.time()
+            print('finished fit for Layer: {}, time elapsed: {:.3f}'.format(i, end_time - start_time))
         self.last_fitted_layer = last_layer_idx
         return gen_fit_input, gen_samples_input
 
@@ -197,43 +206,48 @@ class Linear(Layer):
         super(Linear, self).__init__(features_dim, poly_deg, n_iter)
 
     def data_size_fit(self, x_input):
-        pic_dim = int(np.sqrt(self.features_dim))
+        if x_input.ndim == 4 and x_input.shape[3] == 3:  # 3-channels (RGB data)
+            pic_dim = int(np.sqrt(self.features_dim / 3))
+            is_rgb = 1
+        else:  # if data is single channel
+            pic_dim = int(np.sqrt(self.features_dim))
+            is_rgb = 0
         if pic_dim != x_input.shape[1]:
-            x_resized = op.resize_dataset(x_input, pic_dim)
+            x_resized = op.resize_dataset(x_input, pic_dim, is_rgb)
         else:
             x_resized = x_input
-        x_resized = op.flatten_and_fit_dims(x_resized)
-        return x_resized
+        x_resized = op.flatten_and_fit_dims(x_resized, is_rgb)
+        return x_resized, is_rgb
 
     def fit(self, data_input, gen_input):
         # data resize
-        data_input = self.data_size_fit(data_input)
-        gen_input = self.data_size_fit(gen_input)
+        data_input, is_rgb = self.data_size_fit(data_input)
+        gen_input, _ = self.data_size_fit(gen_input)
         # fit
         gen_output = super(Linear, self).fit(data_input, gen_input)
-        gen_output = op.reshape_as_pics(gen_output)
+        gen_output = op.reshape_as_pics(gen_output, is_rgb)
         return gen_output
 
     def transform(self, data_input, gen_input):
         # data resize
-        data_input = self.data_size_fit(data_input)
-        gen_input = self.data_size_fit(gen_input)
+        data_input, is_rgb = self.data_size_fit(data_input)
+        gen_input, _ = self.data_size_fit(gen_input)
         # transform
         gen_output = super(Linear, self).transform(data_input, gen_input)
-        gen_output = op.reshape_as_pics(gen_output)
+        gen_output = op.reshape_as_pics(gen_output, is_rgb)
 
         return gen_output
 
     def fit_transform(self, data_input, gen_fit_input, gen_samples_input):
         # data resize
-        data_input = self.data_size_fit(data_input)
-        gen_fit_input = self.data_size_fit(gen_fit_input)
-        gen_samples_input = self.data_size_fit(gen_samples_input)
+        data_input, is_rgb = self.data_size_fit(data_input)
+        gen_fit_input, _ = self.data_size_fit(gen_fit_input)
+        gen_samples_input, _ = self.data_size_fit(gen_samples_input)
         # fit_transform
         gen_fit_output, gen_samples_output = \
             super(Linear, self).fit_transform(data_input, gen_fit_input, gen_samples_input)
-        gen_fit_output = op.reshape_as_pics(gen_fit_output)
-        gen_samples_output = op.reshape_as_pics(gen_samples_output)
+        gen_fit_output = op.reshape_as_pics(gen_fit_output, is_rgb)
+        gen_samples_output = op.reshape_as_pics(gen_samples_output, is_rgb)
         return gen_fit_output, gen_samples_output
 
 
@@ -244,49 +258,54 @@ class Conv(Layer):
         self.padding_factor = -1
 
     def data_size_fit(self, x_input):
-        pic_dim = int(np.sqrt(self.features_dim))
+        if x_input.ndim == 4 and x_input.shape[3] == 3:  # 3-channels (RGB data)
+            pic_dim = int(np.sqrt(self.features_dim / 3))
+            is_rgb = 1
+        else:  # if data is single channel
+            pic_dim = int(np.sqrt(self.features_dim))
+            is_rgb = 0
         if pic_dim != x_input.shape[1]:
-            x_resized = op.resize_dataset(x_input, pic_dim)
+            x_resized = op.resize_dataset(x_input, pic_dim, is_rgb)
         else:
             x_resized = x_input
-        x_resized = op.flatten_and_fit_dims(x_resized)
-        x_resized_patches, padding_factor = op.split_to_patches(x_resized, self.kernel_dim)
+        x_resized = op.flatten_and_fit_dims(x_resized, is_rgb)
+        x_resized_patches, padding_factor = op.split_to_patches(x_resized, self.kernel_dim, is_rgb)
         patches_shape = x_resized_patches.shape
 
-        x_resized_patches = op.flatten_and_fit_dims(x_resized_patches, patches=1)
+        x_resized_patches = op.flatten_and_fit_dims(x_resized_patches, patches=1, is_rgb=is_rgb)
 
         self.padding_factor = padding_factor
-        return x_resized_patches, patches_shape
+        return x_resized_patches, patches_shape, is_rgb
 
     def fit(self, data_input, gen_input):
         # data resize
-        data_input, _ = self.data_size_fit(data_input)
-        gen_input, patches_shape = self.data_size_fit(gen_input)
+        data_input, _, is_rgb = self.data_size_fit(data_input)
+        gen_input, patches_shape, _ = self.data_size_fit(gen_input)
         # fit
         gen_output = super(Conv, self).fit(data_input, gen_input)
         # data resize
         gen_output = gen_output.reshape(patches_shape)
-        gen_output = op.reconstruct_from_patches(gen_output, self.kernel_dim, self.padding_factor)
-        gen_output = op.reshape_as_pics(gen_output)
+        gen_output = op.reconstruct_from_patches(gen_output, self.kernel_dim, self.padding_factor, is_rgb)
+        gen_output = op.reshape_as_pics(gen_output, is_rgb)
         return gen_output
 
     def transform(self, data_input, gen_input):
         # data resize
-        data_input, _ = self.data_size_fit(data_input)
-        gen_input, patches_shape = self.data_size_fit(gen_input)
+        data_input, _, is_rgb = self.data_size_fit(data_input)
+        gen_input, patches_shape, _ = self.data_size_fit(gen_input)
         # transform
         gen_output = super(Conv, self).transform(data_input, gen_input)
         # data resize
         gen_output = gen_output.reshape(patches_shape)
-        gen_output = op.reconstruct_from_patches(gen_output, self.kernel_dim, self.padding_factor)
-        gen_output = op.reshape_as_pics(gen_output)
+        gen_output = op.reconstruct_from_patches(gen_output, self.kernel_dim, self.padding_factor, is_rgb)
+        gen_output = op.reshape_as_pics(gen_output, is_rgb)
         return gen_output
 
     def fit_transform(self, data_input, gen_fit_input, gen_samples_input):
         # data resize
-        data_input, _ = self.data_size_fit(data_input)
-        gen_fit_input, fit_patches_shape = self.data_size_fit(gen_fit_input)
-        gen_samples_input, samples_patches_shape = self.data_size_fit(gen_samples_input)
+        data_input, _, is_rgb = self.data_size_fit(data_input)
+        gen_fit_input, fit_patches_shape, _ = self.data_size_fit(gen_fit_input)
+        gen_samples_input, samples_patches_shape, _ = self.data_size_fit(gen_samples_input)
         # fit_transform
         gen_fit_output, gen_samples_output = \
             super(Conv, self).fit_transform(data_input, gen_fit_input, gen_samples_input)
@@ -294,10 +313,10 @@ class Conv(Layer):
         gen_fit_output = gen_fit_output.reshape(fit_patches_shape)
         gen_samples_output = gen_samples_output.reshape(samples_patches_shape)
         # reshape to data form
-        gen_fit_output = op.reconstruct_from_patches(gen_fit_output, self.kernel_dim, self.padding_factor)
-        gen_samples_output = op.reconstruct_from_patches(gen_samples_output, self.kernel_dim, self.padding_factor)
+        gen_fit_output = op.reconstruct_from_patches(gen_fit_output, self.kernel_dim, self.padding_factor, is_rgb)
+        gen_samples_output = op.reconstruct_from_patches(gen_samples_output, self.kernel_dim, self.padding_factor, is_rgb)
         # reshape to pics form
-        gen_fit_output = op.reshape_as_pics(gen_fit_output)
-        gen_samples_output = op.reshape_as_pics(gen_samples_output)
+        gen_fit_output = op.reshape_as_pics(gen_fit_output, is_rgb)
+        gen_samples_output = op.reshape_as_pics(gen_samples_output, is_rgb)
 
         return gen_fit_output, gen_samples_output
