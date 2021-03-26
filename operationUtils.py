@@ -18,23 +18,23 @@ def resize_dataset(x, new_dim, is_rgb=0):
 
 
 def flatten_and_fit_dims(x, patches=0, is_rgb=0):
-    if not is_rgb:
-        x_cs = x.reshape(-1, x.shape[1]*x.shape[2])
+    if is_rgb and not patches:
+        x = x.reshape(-1, x.shape[1] * x.shape[2] * x.shape[3])
     else:
-        x_cs = x.reshape(-1, x.shape[1] * x.shape[2]*x.shape[3])
+        x = x.reshape(-1, x.shape[1] * x.shape[2])
     if patches == 0:
-        x_cs = x_cs.T
-    return x_cs
+        x = x.T
+    return x
 
 
 def reshape_as_pics(x, is_rgb=0):
     if is_rgb:
         pic_dim = int(np.sqrt(x.shape[0] / 3))
-        x_pics = x.T.reshape(x.shape[1], pic_dim, pic_dim, 3)
+        x = x.T.reshape(x.shape[1], pic_dim, pic_dim, 3)
     else:
         pic_dim = int(np.sqrt(x.shape[0]))
-        x_pics = x.T.reshape(x.shape[1], pic_dim, pic_dim)
-    return x_pics
+        x = x.T.reshape(x.shape[1], pic_dim, pic_dim)
+    return x
 
 
 # whiten_data(x):
@@ -83,6 +83,14 @@ def gen_orthogonal_mat(x, x_cov_mat=0, random_state=-1):
     return W
 
 
+def gen_rand_projections_mat(n_projections, features_dim):
+    assert n_projections > features_dim, "num of random projections must be greater than features_dim"
+    H = np.random.uniform(low=-1, high=1, size=(n_projections, features_dim))
+    row_sums = np.sum(H**2, axis=1)
+    #H = H / row_sums
+    return H
+
+
 def patches_projection(x_pics, p_gen_pics, patch_sz, debug=0):
     rand_kernel = np.random.randn(patch_sz, patch_sz)
     kernel_rms = np.sqrt(np.sum(rand_kernel**2)) / patch_sz**2
@@ -117,7 +125,7 @@ def patches_projection(x_pics, p_gen_pics, patch_sz, debug=0):
 #       poly_deg - polynomial fit degree
 #   OUTPUT:
 #       p - polynomial coeffs
-def fit_axis_mapping_func(axis_data, axis_gen, poly_deg, method='TV'):
+def fit_axis_mapping_func(axis_data, axis_gen, poly_deg, method='L1'):
     axis_gen_sorted = np.sort(axis_gen)
     axis_data_sorted = np.sort(axis_data)
     if axis_gen_sorted.ndim > 1:
@@ -127,7 +135,7 @@ def fit_axis_mapping_func(axis_data, axis_gen, poly_deg, method='TV'):
     sampling_vec = np.floor(np.linspace(0, len(axis_data_sorted)-1, len(axis_gen_sorted))).astype(int)
     axis_data_sorted_sampled = axis_data_sorted[sampling_vec]
     if method == 'L1':
-        axis_score = np.sum(np.abs(axis_data_sorted_sampled - axis_gen_sorted))
+        axis_score = np.mean(np.abs(axis_data_sorted_sampled - axis_gen_sorted))
     elif method == 'TV':
         axis_score = np.max(np.abs(axis_data_sorted_sampled - axis_gen_sorted))
     else:
@@ -140,6 +148,10 @@ def fit_axis_mapping_func(axis_data, axis_gen, poly_deg, method='TV'):
                        (axis_data_sorted_sampled[0], axis_data_sorted_sampled[-1]), 1)
     return p, axis_score, support_bounds, p_lin
 
+def fit_axis_mapping_func_multiprocessing(args):
+    axis_data, axis_gen, poly_deg = args
+    io_poly, axis_score, support_bounds, p_lin = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
+    return io_poly, axis_score, support_bounds, p_lin
 
 # apply_transformation(x_gen, io_mapping_mat):
 #   apply polynomial transformation on data series
@@ -174,6 +186,12 @@ def apply_transformation_on_axis(axis_gen, io_mapping_vec, support_bounds=None, 
     return axis_gen_trans
 
 
+def apply_transformation_on_axis_multiprocessing(args):
+    axis_gen, io_mapping_vec, support_bounds = args
+    axis_gen_trans = apply_transformation_on_axis(axis_gen, io_mapping_vec, support_bounds=support_bounds)
+    return axis_gen_trans
+
+
 def fit_axis_and_apply_mapping(axis_data, axis_gen, poly_deg, method='TV'):
     p, _ = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
     axis_gen_trans = apply_transformation_on_axis(axis_gen, p)
@@ -182,9 +200,9 @@ def fit_axis_and_apply_mapping(axis_data, axis_gen, poly_deg, method='TV'):
 
 def fit_axis_and_apply_mapping_multiprocessing(args):
     axis_data, axis_gen, poly_deg = args
-    p, _ = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
-    axis_gen_trans = apply_transformation_on_axis(axis_gen, p)
-    return p, axis_gen_trans
+    io_poly, _, support_bounds, p_lin = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
+    axis_gen_trans = apply_transformation_on_axis(axis_gen, io_poly, support_bounds)
+    return io_poly, axis_gen_trans
 
 
 # cart2sph(x): need to fix
@@ -347,10 +365,10 @@ def split_to_patches(x, patch_sz, padding_flag=1, stride=1, is_rgb=0):
     D = np.size(x, 0)
     N = np.size(x, 1)
     #x_im_view = x.reshape(int(np.sqrt(D)), int(np.sqrt(D)), N)
-    x_im_view = reshape_as_pics(x, is_rgb)
+    x = reshape_as_pics(x, is_rgb)
 
     if not is_rgb: # allow 3-channel images (RGB)
-        x_im_view = np.expand_dims(x_im_view, axis=3)
+        x = np.expand_dims(x, axis=3)
         n_channels = 1
     else:
         n_channels = 3
@@ -359,21 +377,20 @@ def split_to_patches(x, patch_sz, padding_flag=1, stride=1, is_rgb=0):
         padding_factor = int(np.floor(patch_sz / 2))
         # do not pad 3-rd dim
         npad = ((0, 0), (padding_factor, padding_factor), (padding_factor, padding_factor), (0, 0))
-        x_im_view_padded = np.pad(x_im_view, pad_width=npad, mode='constant', constant_values=0)#[:, :, 1:-1]
+        x = np.pad(x, pad_width=npad, mode='constant', constant_values=0)#[:, :, 1:-1]
         padding_factor = 2 * int(np.floor(patch_sz/2))
     else:
-        x_im_view_padded = x_im_view
         padding_factor = 0
-    x_im_view_padded = np.squeeze(x_im_view_padded)
+    x = np.squeeze(x)
 
     pic_dim = np.sqrt(D/n_channels)
     patches_per_im = int((pic_dim + 1 + padding_factor - patch_sz) ** 2)
     x_patches = np.zeros([(patch_sz ** 2) * n_channels, patches_per_im, N])
     for i in range(N):
         if is_rgb:
-            x_patches[:, :, i] = im3D2col_sliding_strided(x_im_view_padded[i, :, :], [patch_sz, patch_sz], stride)
+            x_patches[:, :, i] = im3D2col_sliding_strided(x[i, :, :], [patch_sz, patch_sz], stride)
         else:
-            x_patches[:, :, i] = im2col_sliding_strided(x_im_view_padded[i, :, :], [patch_sz, patch_sz], stride)
+            x_patches[:, :, i] = im2col_sliding_strided(x[i, :, :], [patch_sz, patch_sz], stride)
     return x_patches, padding_factor
 
 
@@ -393,9 +410,10 @@ def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_r
         n_channels = 1
     D = int((np.sqrt(np.size(x_patches, 1)) - 1 - padding_factor + patch_sz)**2) * n_channels
     N = np.size(x_patches, -1)
-    center_elem_idx_chan1 = int(np.ceil(patch_sz**2 / 2)) - 1 # -1 offset for pythonic indexing as opposed to matlab
 
+    center_elem_idx_chan1 = int(np.ceil(patch_sz**2 / 2)) - 1 # -1 offset for pythonic indexing as opposed to matlab
     x_patches_centers_chan1 = x_patches[center_elem_idx_chan1, :, :].squeeze()
+
     x_patches_centers = x_patches_centers_chan1.reshape(int(D/n_channels), N)
 
     if is_rgb:
@@ -409,7 +427,6 @@ def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_r
 
         x_patches_centers = \
             np.moveaxis(np.dstack((x_patches_centers, x_patches_centers_chan2, x_patches_centers_chan3)), -1, 1)
-        print(x_patches_centers.shape)
     # this line might be redundant
     x_recon = x_patches_centers.reshape(D, N)
     return x_recon
