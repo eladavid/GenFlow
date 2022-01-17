@@ -4,7 +4,44 @@ import cv2
 from matplotlib import pyplot as plt
 from matplotlib import colors
 
+# This module contains utility functions for data reshaping, random sampling, and fitting
 
+
+# batch_naive_lstsq(Y, X):
+# batch version of least-squares algorithm.
+def batch_naive_lstsq(Y, X):
+    A = np.matmul(np.linalg.pinv(X), Y)
+    return A
+
+
+# batch_polyval(p_batch, x_batch):
+# batch version polyval
+def batch_polyval(p_batch, x_batch):
+    y_batch = np.matmul(x_batch, p_batch)
+    return y_batch
+
+
+# batch_polyfit(X, Y, p):
+# batch version polyfit
+def batch_polyfit(X, Y, p):
+    D = X.shape[0]
+    N = X.shape[1]
+    assert D < N
+    n_powers = int(p + 1)
+    X_cs = X.flatten()
+    Y_ls = Y.reshape(D, N, -1)
+    powers_mat = np.vander(X_cs, n_powers)
+    powers_mat = powers_mat.reshape(D, N ,-1)
+
+    p_batch = batch_naive_lstsq(Y_ls, powers_mat)
+    X_polyval = batch_polyval(p_batch, powers_mat)
+    p_batch = np.squeeze(p_batch).T
+    X_polyval = np.squeeze(X_polyval)
+    return p_batch, X_polyval
+
+
+# resize_dataset(x, new_dim, is_rgb=0):
+# resize the input images x to a new W & H dimension.
 def resize_dataset(x, new_dim, is_rgb=0):
     if is_rgb:
         x_resized = np.zeros([x.shape[0], new_dim, new_dim, 3])
@@ -16,7 +53,8 @@ def resize_dataset(x, new_dim, is_rgb=0):
             x_resized[i, :, :] = cv2.resize(x[i, :, :], dsize=(new_dim, new_dim), interpolation=cv2.INTER_CUBIC)
     return x_resized
 
-
+# flatten_and_fit_dims(x, patches=0, is_rgb=0):
+# convert x into column vectors representation. works also for patches input
 def flatten_and_fit_dims(x, patches=0, is_rgb=0):
     if is_rgb and not patches:
         x = x.reshape(-1, x.shape[1] * x.shape[2] * x.shape[3])
@@ -26,7 +64,8 @@ def flatten_and_fit_dims(x, patches=0, is_rgb=0):
         x = x.T
     return x
 
-
+# reshape_as_pics(x, is_rgb=0):
+# convert column vectrors data input into images
 def reshape_as_pics(x, is_rgb=0):
     if is_rgb:
         pic_dim = int(np.sqrt(x.shape[0] / 3))
@@ -55,6 +94,7 @@ def whiten_data(x):
 
 
 # gen_orthogonal_mat(x, x_cov_mat=0):
+#   FALSE IMPLEMENTATION - better use the "haar" version below
 # generate random orthogonal matrix DxD
 #   INPUTS:
 #       x - DxN data matrix
@@ -83,6 +123,24 @@ def gen_orthogonal_mat(x, x_cov_mat=0, random_state=-1):
     return W
 
 
+def gen_orthogonal_mat_haar(x, x_cov_mat=0, random_state=-1):
+    assert x.ndim != 1
+    if random_state != -1:
+        rng = np.random.RandomState(random_state)
+    else:
+        rng = np.random
+    D = np.size(x, 0)
+    N = np.size(x, 1)
+    z = rng.randn(D,D)
+    Q, R = np.linalg.qr(z)
+    d = np.diag(R)
+    ph = np.diag(np.sign(d))
+    W = Q @ ph @ Q
+    return W
+
+
+# gen_rand_projections_mat(n_projections, features_dim):
+#   generate a random projection matrix (random unit vectors stacked)
 def gen_rand_projections_mat(n_projections, features_dim):
     assert n_projections > features_dim, "num of random projections must be greater than features_dim"
     H = np.random.uniform(low=-1, high=1, size=(n_projections, features_dim))
@@ -90,7 +148,8 @@ def gen_rand_projections_mat(n_projections, features_dim):
     #H = H / row_sums
     return H
 
-
+# patches_projection(x_pics, p_gen_pics, patch_sz, debug=0):
+# not in use. redundant
 def patches_projection(x_pics, p_gen_pics, patch_sz, debug=0):
     rand_kernel = np.random.randn(patch_sz, patch_sz)
     kernel_rms = np.sqrt(np.sum(rand_kernel**2)) / patch_sz**2
@@ -148,10 +207,14 @@ def fit_axis_mapping_func(axis_data, axis_gen, poly_deg, method='L1'):
                        (axis_data_sorted_sampled[0], axis_data_sorted_sampled[-1]), 1)
     return p, axis_score, support_bounds, p_lin
 
+
+# multiprocessing implementation of the above.
+# user must follow the args unwrapping as performed in the first line
 def fit_axis_mapping_func_multiprocessing(args):
     axis_data, axis_gen, poly_deg = args
     io_poly, axis_score, support_bounds, p_lin = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
     return io_poly, axis_score, support_bounds, p_lin
+
 
 # apply_transformation(x_gen, io_mapping_mat):
 #   apply polynomial transformation on data series
@@ -168,6 +231,7 @@ def apply_transformation(x_gen, io_mapping_mat):
     return x_gen_trans
 
 
+# single axis version of the above
 def apply_transformation_on_axis(axis_gen, io_mapping_vec, support_bounds=None, p_lin=None):
     if np.any(np.isnan(io_mapping_vec)):
         io_mapping_vec = np.zeros(io_mapping_vec.shape)
@@ -186,12 +250,14 @@ def apply_transformation_on_axis(axis_gen, io_mapping_vec, support_bounds=None, 
     return axis_gen_trans
 
 
+# multiprocessing version of the above
 def apply_transformation_on_axis_multiprocessing(args):
     axis_gen, io_mapping_vec, support_bounds = args
     axis_gen_trans = apply_transformation_on_axis(axis_gen, io_mapping_vec, support_bounds=support_bounds)
     return axis_gen_trans
 
 
+# combination of fit and application functions
 def fit_axis_and_apply_mapping(axis_data, axis_gen, poly_deg, method='TV'):
     p, _ = fit_axis_mapping_func(axis_data, axis_gen, poly_deg)
     axis_gen_trans = apply_transformation_on_axis(axis_gen, p)
@@ -204,6 +270,16 @@ def fit_axis_and_apply_mapping_multiprocessing(args):
     axis_gen_trans = apply_transformation_on_axis(axis_gen, io_poly, support_bounds)
     return io_poly, axis_gen_trans
 
+
+# batch version of fitting. not recommended!
+def fit_and_apply_multidim(data, gen, poly_deg):
+    gen = np.sort(gen, axis=1)
+    data = np.sort(data, axis=1)
+    sampling_vec = np.floor(np.linspace(0, data.shape[1] - 1, gen.shape[1])).astype(int)
+    data = data[:, sampling_vec]
+    support_bounds = np.stack((gen[:, 0], gen[:, -1]))
+    p_mat, gen = batch_polyfit(gen, data, poly_deg)
+    return p_mat, gen, support_bounds
 
 # cart2sph(x): need to fix
 #   apply cartesian to spherical transformation of dim D
@@ -292,6 +368,16 @@ def convert_data_to_collage(x, pics_per_row=10, pics_per_col=10, random_state=-1
     return collage
 
 
+# transform_sample(random_state_list, io_mapping_tensor, x_data, transform_input=0):
+#   perform transformation over new gaussian samples
+#   INPUTS:
+#       random_state_list - list of seeds
+#       io_mapping_tensor - n_iter x p x D tensor of polynomial coeffs.
+#       x_data - D x N data matrix
+#       transform_input (optional) - D x k new gaussian realizations
+#   OUTPUT:
+#       gen_sample_last - result of transformation
+
 def transform_sample(random_state_list, io_mapping_tensor, x_data, transform_input=0):
     features_dim = x_data.shape[0]
     if transform_input == 0:
@@ -328,7 +414,12 @@ def calc_axis_io_score(axis_data, axis_gen, method='TV'):
     return axis_score
 
 
-
+# im3D2col_sliding_strided(im, blk_sz, stepsize=1):
+#   a 3d version of matlab im2col function. used to split image to patches
+#   inputs:
+#       im - W x H x C - image to split
+#       blk_sz - (1,1) list of patch sizes
+#       stepsize - stride of patch
 def im3D2col_sliding_strided(im, blk_sz, stepsize=1):
     im_channel1 = im[:,:,0]
     im_channel2 = im[:, :, 1]
@@ -341,6 +432,12 @@ def im3D2col_sliding_strided(im, blk_sz, stepsize=1):
     patch_3d = np.concatenate((channel1_patches, channel2_patches, channel3_patches), axis=0)
     return patch_3d
 
+# im2col_sliding_strided(im, blk_sz, stepsize=1):
+#   a python version of matlab im2col function. used to split image to patches
+#   inputs:
+#       im - W x H - image to split
+#       blk_sz - (1,1) list of patch sizes
+#       stepsize - stride of patch
 def im2col_sliding_strided(im, blk_sz, stepsize=1):
     # Parameters
     m, n = im.shape
@@ -381,7 +478,8 @@ def split_to_patches(x, patch_sz, padding_flag=1, stride=1, is_rgb=0):
         padding_factor = 2 * int(np.floor(patch_sz/2))
     else:
         padding_factor = 0
-    x = np.squeeze(x)
+    if not is_rgb:  # allow 3-channel images (RGB)
+        x = np.squeeze(x, axis=3)
 
     pic_dim = np.sqrt(D/n_channels)
     patches_per_im = int((pic_dim + 1 + padding_factor - patch_sz) ** 2)
@@ -403,7 +501,7 @@ def split_to_patches(x, patch_sz, padding_flag=1, stride=1, is_rgb=0):
 #       stride - stride for the moving filter - not in use at the moment
 #   OUTPUT:
 #       x_recon - D (features) x N (samples) matrix
-def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_rgb=0):
+def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_rgb=0, use_mean=0):
     if is_rgb:
         n_channels = 3
     else:
@@ -412,22 +510,86 @@ def reconstruct_from_patches(x_patches, patch_sz, padding_factor, stride=1, is_r
     N = np.size(x_patches, -1)
 
     center_elem_idx_chan1 = int(np.ceil(patch_sz**2 / 2)) - 1 # -1 offset for pythonic indexing as opposed to matlab
-    x_patches_centers_chan1 = x_patches[center_elem_idx_chan1, :, :].squeeze()
+    if not use_mean:
+        x_patches_centers_chan1 = x_patches[center_elem_idx_chan1, :, :].squeeze()
+    else:
+        # apply mean operation
+        ## first patch uses only center
+        ### until <patch_sz> patches, we sum less then <patch_sz> elements, same with the last <patch_sz> elements.
+        chan1_end = patch_sz**2
+        x_patches_centers_chan1 = np.apply_along_axis(mean_pixel_of_neighbor_patches, 0, x_patches[:chan1_end, :, :].reshape(-1, N), patch_sz**2, int(padding_factor/2))
+
 
     x_patches_centers = x_patches_centers_chan1.reshape(int(D/n_channels), N)
 
     if is_rgb:
-        center_elem_idx_chan2 = patch_sz**2 + center_elem_idx_chan1
-        x_patches_centers_chan2 = x_patches[center_elem_idx_chan2, :, :].squeeze()
-        x_patches_centers_chan2 = x_patches_centers_chan2.reshape(int(D / n_channels), N)
+        if not use_mean:
+            center_elem_idx_chan2 = patch_sz**2 + center_elem_idx_chan1
+            x_patches_centers_chan2 = x_patches[center_elem_idx_chan2, :, :].squeeze()
+            x_patches_centers_chan2 = x_patches_centers_chan2.reshape(int(D / n_channels), N)
 
-        center_elem_idx_chan3 = 2 * (patch_sz ** 2) + center_elem_idx_chan1
-        x_patches_centers_chan3 = x_patches[center_elem_idx_chan3, :, :].squeeze()
-        x_patches_centers_chan3 = x_patches_centers_chan3.reshape(int(D / n_channels), N)
-
+            center_elem_idx_chan3 = 2 * (patch_sz ** 2) + center_elem_idx_chan1
+            x_patches_centers_chan3 = x_patches[center_elem_idx_chan3, :, :].squeeze()
+            x_patches_centers_chan3 = x_patches_centers_chan3.reshape(int(D / n_channels), N)
+        else:
+            chan2_start = chan1_end
+            chan2_end = 2 * (patch_sz**2)
+            chan3_start = chan2_end
+            chan3_end = 3 * (patch_sz**2)
+            x_patches_centers_chan2 = np.apply_along_axis(mean_pixel_of_neighbor_patches, 0, x_patches[chan2_start:chan2_end, :, :].reshape(-1, N),
+                                                          patch_sz**2, int(padding_factor/2))
+            x_patches_centers_chan3 = np.apply_along_axis(mean_pixel_of_neighbor_patches, 0, x_patches[chan3_start:chan3_end, :, :].reshape(-1, N),
+                                                          patch_sz**2, int(padding_factor/2))
         x_patches_centers = \
             np.moveaxis(np.dstack((x_patches_centers, x_patches_centers_chan2, x_patches_centers_chan3)), -1, 1)
     # this line might be redundant
     x_recon = x_patches_centers.reshape(D, N)
     return x_recon
+
+
+# mean_pixel_of_neighbor_patches(im_patches,  patch_sz, padding_factor):
+#   reconstruct image from patches using averaging instead of sampling
+def mean_pixel_of_neighbor_patches(im_patches,  patch_sz, padding_factor):
+    im_patches = im_patches.reshape(patch_sz, -1)
+    patches_sz = im_patches.shape[0]
+    patches_dim = int(np.sqrt(patches_sz))
+    patches_per_im = im_patches.shape[1]
+    pic_dim = int(np.sqrt(patches_per_im))
+    mean_im = np.zeros(patches_per_im)
+    k = 0
+    for i in range(patches_per_im):
+        index_2d = np.unravel_index(i, (pic_dim, pic_dim))
+        x_low = np.max((index_2d[0]-padding_factor, 0))
+        x_high = np.min((index_2d[0]+padding_factor, pic_dim-1))
+        y_low = np.max((index_2d[1] - padding_factor, 0))
+        y_high = np.min((index_2d[1] + padding_factor, pic_dim-1))
+        x, y = np.mgrid[x_low:x_high+1, y_low:y_high+1]
+        neighbor_list = np.vstack((x.flatten(), y.flatten()))
+        curr_patch_num = i
+        matching_idcs_list = np.ravel_multi_index(neighbor_list, (pic_dim, pic_dim))
+
+        relative_dist =  neighbor_list[1,:] - index_2d[1] + (neighbor_list[0, :] - index_2d[0])*patches_dim
+        #relative_idcs_list = (np.ravel_multi_index(relative_2d_idcs, (patches_dim, patches_dim)))
+
+        center_idx = int(np.ceil(patches_sz / 2)) - 1
+        #true_2d_idx = np.unravel_index(k, (pic_dim, pic_dim))
+
+        mean_im[k] = np.median(im_patches[center_idx-relative_dist, matching_idcs_list])
+        k = k + 1
+    return mean_im
+
+# patches - patch_sz x patches_per_im x N
+# filter - patch_sz x 1
+# operation - filter.T @ patches....i.e. apply filter over each patch
+def apply_filter_on_patches(patches, filter):
+    static_over_patches = filter.T @ patches.reshape((filter.shape[0], -1))
+    static_over_patches = static_over_patches.reshape(1, patches.shape[1], -1)
+    return static_over_patches
+
+# if i map by stats, i find mapping between patches using their stats, but the loss of information is too big.
+# i can use method of moments to find k moments of the patch, k = patch_sz, and thus i use another representation.
+# but still the info is lost.
+
+# how can i revert?
+#def map_by_statistic(patches, statistic_over_patches):
 
